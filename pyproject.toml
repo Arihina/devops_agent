@@ -1,7 +1,7 @@
 [project]
 name = "devops-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "CLI-агент для генерации и диагностики инфраструктурного обвеса Python-бэкенда"
 readme = "README.md"
 authors = [
     { name = "Alena", email = "" }
@@ -11,6 +11,7 @@ dependencies = [
     "docker>=7.2.0",
     "instructor>=1.17.0",
     "openai>=3.3.0",
+    "pydantic>=2.7.0",
     "rich>=14.3.4",
     "typer>=0.27.3",
 ]

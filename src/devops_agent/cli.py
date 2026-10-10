@@ -10,13 +10,16 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.table import Table
 from rich.tree import Tree
 
 from devops_agent import __version__
-from devops_agent.core.config import DEFAULT_CONFIG_TOML
+from devops_agent.core.config import DEFAULT_CONFIG_TOML, load_config
 from devops_agent.core.paths import Paths, resolve_root
 from devops_agent.core.reporter import Reporter
 from devops_agent.core.state import State, StateStore
+from devops_agent.discovery import Discovery
+from devops_agent.discovery.models import DiscoveryResult
 
 app = typer.Typer(
     name="devops-agent",
@@ -41,6 +44,57 @@ def _root_option():
 def _not_implemented(name: str, stage: int) -> None:
     console.print(f"[yellow]{name}[/] — будет реализовано на этапе {stage}.")
     raise typer.Exit(code=2)
+
+
+def _render_discovery(result: DiscoveryResult, root: Path) -> None:
+    """Rich-вывод результата Discovery для команды `profile`."""
+    profile = result.profile
+
+    console.print(f"[dim]Корень: {root}[/dim]")
+    table = Table(title="StackProfile", show_header=False, title_style="bold")
+    table.add_column("Поле", style="bold cyan")
+    table.add_column("Значение")
+    table.add_row("Python", profile.python_version or "—")
+    table.add_row("Пакетный менеджер", profile.package_manager or "—")
+    table.add_row("Фреймворк", profile.framework or "—")
+    table.add_row("Точка входа", profile.entry_point or "—")
+    table.add_row("Порт", str(profile.port)
+                  if profile.port is not None else "—")
+    table.add_row("Миграции", ", ".join(profile.migrations)
+                  if profile.migrations else "—")
+    table.add_row("Внешние сервисы", ", ".join(
+        profile.external_services) if profile.external_services else "—")
+    table.add_row(
+        "Системные (apt)",
+        ", ".join(
+            profile.system_dependencies) if profile.system_dependencies else "—",
+    )
+    console.print(table)
+
+    console.print(f"[bold]Пакеты:[/] {len(result.packages)}")
+
+    if result.env_vars:
+        env_table = Table(title="Переменные окружения (из кода)")
+        env_table.add_column("Имя", style="bold")
+        env_table.add_column("Тип")
+        env_table.add_column("По умолчанию")
+        env_table.add_column("Где")
+        for var in result.env_vars:
+            env_table.add_row(var.name, var.type or "?",
+                              var.default or "", var.locations[0])
+        console.print(env_table)
+    else:
+        console.print("[dim]Переменные окружения в коде не найдены.[/dim]")
+
+    if result.artifacts:
+        art_table = Table(title="Существующие артефакты")
+        art_table.add_column("Тип", style="bold")
+        art_table.add_column("Путь")
+        for artifact in result.artifacts:
+            art_table.add_row(artifact.type.value, artifact.path)
+        console.print(art_table)
+    else:
+        console.print("[dim]Инфраструктурные артефакты не найдены.[/dim]")
 
 
 @app.callback(invoke_without_command=True)
@@ -106,7 +160,10 @@ def report(root: Path = _root_option()) -> None:
 @app.command()
 def profile(root: Path = _root_option()) -> None:
     """Показать определённый StackProfile без генерации."""
-    _not_implemented("profile", 1)
+    paths = Paths(resolve_root(root))
+    config = load_config(paths.config_file)
+    result = Discovery(paths.root, config).run()
+    _render_discovery(result, paths.root)
 
 
 @app.command()

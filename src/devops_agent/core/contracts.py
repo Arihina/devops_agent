@@ -67,7 +67,7 @@ class DiagnosisSource(str, Enum):
 class StackProfile(BaseModel):
     """Нормализованное описание проекта (раздел 3.3)."""
 
-    python_version: str
+    python_version: str | None = None
     package_manager: str | None = None
     framework: str | None = None
     entry_point: str | None = None

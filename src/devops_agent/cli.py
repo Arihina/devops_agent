@@ -20,6 +20,7 @@ from devops_agent.core.reporter import Reporter
 from devops_agent.core.state import State, StateStore
 from devops_agent.discovery import Discovery
 from devops_agent.discovery.models import DiscoveryResult
+from devops_agent.redaction import RedactionResult, Redactor
 
 app = typer.Typer(
     name="devops-agent",
@@ -97,6 +98,21 @@ def _render_discovery(result: DiscoveryResult, root: Path) -> None:
         console.print("[dim]Инфраструктурные артефакты не найдены.[/dim]")
 
 
+def _render_masks(result: RedactionResult) -> None:
+    """Rich-вывод списка замаскированных фрагментов для команды `redact`."""
+    if not result.masks:
+        console.print("[dim]Секретов не найдено.[/dim]")
+        return
+    table = Table(title=f"Замаскировано: {len(result.masks)}")
+    table.add_column("Тип", style="bold")
+    table.add_column("Ключ")
+    table.add_column("Строка")
+    for mask in result.masks:
+        table.add_row(mask.kind.value, mask.key or "—",
+                      str(mask.line) if mask.line else "—")
+    console.print(table)
+
+
 @app.callback(invoke_without_command=True)
 def _version_callback(
     version: bool = typer.Option(
@@ -164,6 +180,30 @@ def profile(root: Path = _root_option()) -> None:
     config = load_config(paths.config_file)
     result = Discovery(paths.root, config).run()
     _render_discovery(result, paths.root)
+
+
+@app.command()
+def redact(
+    target: str = typer.Argument(..., help="Файл или текст для маскирования."),
+    root: Path = _root_option(),
+    report: bool = typer.Option(
+        False, "--report", help="Показать, что именно было замаскировано."
+    ),
+) -> None:
+    """Замаскировать секреты и показать текст, который уйдёт в модель."""
+    paths = Paths(resolve_root(root))
+    config = load_config(paths.config_file)
+    redactor = Redactor(extra_patterns=config.redaction.extra_patterns)
+
+    target_path = Path(target)
+    if target_path.is_file():
+        result = redactor.redact_file(target_path)
+    else:
+        result = redactor.redact(target)
+
+    console.print(result.masked_text, markup=False)
+    if report:
+        _render_masks(result)
 
 
 @app.command()

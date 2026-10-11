@@ -15,12 +15,14 @@ from rich.tree import Tree
 
 from devops_agent import __version__
 from devops_agent.core.config import DEFAULT_CONFIG_TOML, load_config
+from devops_agent.core.contracts import Severity
 from devops_agent.core.paths import Paths, resolve_root
 from devops_agent.core.reporter import Reporter
 from devops_agent.core.state import State, StateStore
 from devops_agent.discovery import Discovery
 from devops_agent.discovery.models import DiscoveryResult
 from devops_agent.redaction import RedactionResult, Redactor
+from devops_agent.validation import AuditResult, audit as run_audit
 
 app = typer.Typer(
     name="devops-agent",
@@ -111,6 +113,48 @@ def _render_masks(result: RedactionResult) -> None:
         table.add_row(mask.kind.value, mask.key or "—",
                       str(mask.line) if mask.line else "—")
     console.print(table)
+
+
+def _render_audit(result: AuditResult, root: Path) -> None:
+    """Rich-вывод результата аудита для команды `audit`."""
+    console.print(f"[dim]Корень: {root}[/dim]")
+
+    if not result.artifacts:
+        console.print("[yellow]Инфраструктурных артефактов не найдено — нечего аудировать.[/yellow]")
+        return
+
+    verdict_icons = {
+        "pass": "[green]✓ pass[/green]",
+        "fail": "[red]✗ fail[/red]",
+        "warn": "[yellow]! warn[/yellow]",
+        "reject": "[red]✗ reject[/red]",
+    }
+    gate_table = Table(title="Гейты")
+    gate_table.add_column("Гейт", style="bold")
+    gate_table.add_column("Вердикт")
+    gate_table.add_column("Причина")
+    for gate_result in result.gates:
+        gate_table.add_row(
+            f"{gate_result.gate.value} ({gate_result.level.value})",
+            verdict_icons[gate_result.verdict.value],
+            gate_result.reason or "—",
+        )
+    console.print(gate_table)
+
+    if result.findings:
+        severity_style = {"error": "red", "warning": "yellow", "info": "dim"}
+        finding_table = Table(title=f"Findings ({len(result.findings)})")
+        finding_table.add_column("Серьёзность", style="bold")
+        finding_table.add_column("Правило")
+        finding_table.add_column("Расположение")
+        finding_table.add_column("Предложение")
+        for finding in result.findings:
+            style = severity_style.get(finding.severity.value)
+            severity = f"[{style}]{finding.severity.value}[/{style}]" if style else finding.severity.value
+            finding_table.add_row(severity, finding.rule, finding.location, finding.suggestion or "—")
+        console.print(finding_table)
+    else:
+        console.print("[green]Findings не найдены.[/green]")
 
 
 @app.callback(invoke_without_command=True)
@@ -207,9 +251,19 @@ def redact(
 
 
 @app.command()
-def audit(root: Path = _root_option()) -> None:
+def audit(
+    root: Path = _root_option(),
+    no_build: bool = typer.Option(
+        False, "--no-build", help="Только статическая валидация (без сборки и запуска)."
+    ),
+) -> None:
     """Проверить существующие артефакты и вернуть findings без изменений."""
-    _not_implemented("audit", 3)
+    paths = Paths(resolve_root(root))
+    config = load_config(paths.config_file)
+    result = run_audit(paths.root, config, skip_build=no_build)
+    _render_audit(result, paths.root)
+    if any(f.severity == Severity.ERROR for f in result.findings):
+        raise typer.Exit(code=1)
 
 
 @app.command()

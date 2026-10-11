@@ -5,6 +5,7 @@ from devops_agent.redaction.redactor import (
     MaskKind,
     RedactionResult,
     Redactor,
+    is_secret_key,
 )
 
-__all__ = ["Redactor", "RedactionResult", "MaskInfo", "MaskKind"]
+__all__ = ["Redactor", "RedactionResult", "MaskInfo", "MaskKind", "is_secret_key"]

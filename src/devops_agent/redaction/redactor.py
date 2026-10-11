@@ -108,7 +108,7 @@ def shannon_entropy(value: str) -> float:
     return -sum((n / length) * math.log2(n / length) for n in counts.values())
 
 
-def _is_secret_key(key: str) -> bool:
+def is_secret_key(key: str) -> bool:
     lowered = key.lower()
     if any(term in lowered for term in SECRET_KEY_TERMS):
         return True
@@ -143,21 +143,21 @@ class Redactor:
     def _mask_line(self, line: str, lineno: int, masks: list[MaskInfo]) -> str:
         # KEY=VALUE
         match = ENV_KV_RE.match(line)
-        if match and _is_secret_key(match.group("key")):
+        if match and is_secret_key(match.group("key")):
             masks.append(MaskInfo(kind=MaskKind.KEY_NAME,
                          key=match.group("key"), line=lineno))
             return f"{match.group('key')}={REDACTED}"
 
         # KEY: VALUE (yaml-подобные)
         match = YAML_KV_RE.match(line)
-        if match and _is_secret_key(match.group("key")):
+        if match and is_secret_key(match.group("key")):
             masks.append(MaskInfo(kind=MaskKind.KEY_NAME,
                          key=match.group("key"), line=lineno))
             return f"{match.group('key')}: {REDACTED}"
 
         # "key": "value" (json)
         def _json(match: re.Match) -> str:
-            if _is_secret_key(match.group("key")):
+            if is_secret_key(match.group("key")):
                 masks.append(MaskInfo(kind=MaskKind.KEY_NAME,
                              key=match.group("key"), line=lineno))
                 return f'"{match.group("key")}": "{REDACTED}"'

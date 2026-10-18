@@ -1,13 +1,12 @@
 """Docker Execution: обёртка над CLI Docker через subprocess.
-
-Используем CLI (а не Python SDK) ради прозрачности: BuildKit-флаги и кеш
-передавать в subprocess проще, а результат читается напрямую из stdout/stderr.
 """
 
 from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,10 +33,18 @@ class DockerExecution:
             return False
         return self._run(["version"], timeout_s=15).ok
 
-    def build(self, context: Path, dockerfile: Path, tag: str, timeout_s: int) -> CommandResult:
+    def build(
+        self,
+        context: Path,
+        dockerfile: Path,
+        tag: str,
+        timeout_s: int,
+        stream: bool = False,
+    ) -> CommandResult:
         return self._run(
             ["build", "-f", str(dockerfile), "-t", tag, str(context)],
             timeout_s=timeout_s,
+            stream=stream,
         )
 
     def inspect_size(self, tag: str) -> int | None:
@@ -86,6 +93,14 @@ class DockerExecution:
         args: list[str],
         timeout_s: int = 300,
         cwd: Path | None = None,
+        stream: bool = False,
+    ) -> CommandResult:
+        if stream:
+            return self._run_streaming(args, timeout_s, cwd)
+        return self._run_captured(args, timeout_s, cwd)
+
+    def _run_captured(
+        self, args: list[str], timeout_s: int, cwd: Path | None
     ) -> CommandResult:
         try:
             proc = subprocess.run(
@@ -100,3 +115,56 @@ class DockerExecution:
             return CommandResult(-1, "", "таймаут выполнения")
         except FileNotFoundError:
             return CommandResult(-1, "", f"{self.binary}: не найден")
+
+    def _run_streaming(
+        self, args: list[str], timeout_s: int, cwd: Path | None
+    ) -> CommandResult:
+        """Запуск с живым выводом в терминал (для долгих операций вроде build)."""
+        self._emit(f"[devops-agent] $ {self.binary} {' '.join(args)}\n")
+        try:
+            proc = subprocess.Popen(
+                [self.binary, *args],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                cwd=str(cwd) if cwd else None,
+            )
+        except FileNotFoundError:
+            return CommandResult(-1, "", f"{self.binary}: не найден")
+
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+
+        def reader(stream, sink):
+            for line in iter(stream.readline, ""):
+                sink.append(line)
+                self._emit(line)
+
+        out_thread = threading.Thread(
+            target=reader, args=(proc.stdout, stdout_parts), daemon=True
+        )
+        err_thread = threading.Thread(
+            target=reader, args=(proc.stderr, stderr_parts), daemon=True
+        )
+        out_thread.start()
+        err_thread.start()
+
+        try:
+            proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            self._emit("[devops-agent] таймаут выполнения\n")
+            return CommandResult(-1, "", "таймаут выполнения")
+
+        out_thread.join(timeout=2)
+        err_thread.join(timeout=2)
+        return CommandResult(
+            proc.returncode, "".join(stdout_parts), "".join(stderr_parts)
+        )
+
+    @staticmethod
+    def _emit(line: str) -> None:
+        sys.stderr.write(line)
+        sys.stderr.flush()

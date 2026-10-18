@@ -13,10 +13,16 @@ from devops_agent.validation.gates import Validator
 from devops_agent.validation.models import AuditResult
 
 
-def audit(root: Path, config: Config, skip_build: bool = False) -> AuditResult:
+def audit(
+    root: Path,
+    config: Config,
+    skip_build: bool = False,
+    verbose: bool = False,
+) -> AuditResult:
     """Прогнать гейты по существующим артефактам и вернуть findings без изменений.
 
     `skip_build=True` оставляет только статическую валидацию (без сборки/запуска).
+    `verbose=True` включает живой вывод `docker build` в терминал.
     """
     docker = DockerExecution(config.execution.container_runtime)
     artifacts = ArtifactInventory(root).scan()
@@ -26,7 +32,7 @@ def audit(root: Path, config: Config, skip_build: bool = False) -> AuditResult:
     if not artifacts:
         return result
 
-    validator = Validator(root, config, docker)
+    validator = Validator(root, config, docker, verbose=verbose)
 
     has_dockerfile = any(a.type == ArtifactType.DOCKERFILE for a in artifacts)
     if has_dockerfile:

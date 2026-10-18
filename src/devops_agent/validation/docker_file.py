@@ -46,9 +46,19 @@ def _logical_lines(content: str) -> list[str]:
 
 
 def _parse_from(args: str) -> tuple[str | None, str | None, str | None]:
-    """Разобрать аргумент FROM в (образ, тег, дайджест)."""
-    parts = args.split()
-    ref = parts[-1] if parts else ""
+    """Разобрать аргумент FROM в (образ, тег, дайджест).
+
+    Учитывает `AS <alias>` и флаги вида `--platform=...`.
+    """
+    tokens = args.split()
+    ref = ""
+    for token in tokens:
+        if token.upper() == "AS":
+            break
+        if token.startswith("--"):
+            continue
+        ref = token
+        break
     digest = None
     if "@" in ref:
         ref, digest = ref.split("@", 1)

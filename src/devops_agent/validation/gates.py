@@ -53,15 +53,29 @@ def _tail(text: str, n: int = 20) -> str:
 class Validator:
     """Набор гейтов, оценивающих существующие артефакты."""
 
-    def __init__(self, root: Path, config: Config, docker: DockerExecution) -> None:
+    def __init__(
+        self,
+        root: Path,
+        config: Config,
+        docker: DockerExecution,
+        verbose: bool = False,
+    ) -> None:
         self.root = root
         self.config = config
         self.docker = docker
+        self.verbose = verbose
+
+    def _rel(self, path: Path) -> str:
+        """Путь для findings: относительно root, если внутри, иначе как есть."""
+        try:
+            return path.relative_to(self.root).as_posix()
+        except ValueError:
+            return path.as_posix()
 
     # Lint Gate (статический)
 
     def lint_dockerfile(self, dockerfile: Path) -> GateResult:
-        rel = dockerfile.relative_to(self.root).as_posix()
+        rel = self._rel(dockerfile)
         content = dockerfile.read_text(encoding="utf-8", errors="replace")
         info = parse_dockerfile(content)
 
@@ -153,7 +167,7 @@ class Validator:
     # Security Gate (статический)
 
     def security(self, dockerfile: Path) -> GateResult:
-        rel = dockerfile.relative_to(self.root).as_posix()
+        rel = self._rel(dockerfile)
         content = dockerfile.read_text(encoding="utf-8", errors="replace")
         info = parse_dockerfile(content)
 
@@ -268,7 +282,7 @@ class Validator:
     # Build Gate (сборочный)
 
     def build(self, dockerfile: Path) -> tuple[GateResult, str | None]:
-        rel = dockerfile.relative_to(self.root).as_posix()
+        rel = self._rel(dockerfile)
         if not self.docker.available():
             return (
                 GateResult(gate=Gate.BUILD, level=ValidationLevel.BUILD,
@@ -277,7 +291,8 @@ class Validator:
             )
         tag = f"devopsagent-audit:{secrets.token_hex(6)}"
         result = self.docker.build(
-            self.root, dockerfile, tag, self.config.execution.build_timeout_s
+            self.root, dockerfile, tag, self.config.execution.build_timeout_s,
+            stream=self.verbose,
         )
         if result.ok:
             return (

@@ -15,7 +15,7 @@ from rich.tree import Tree
 
 from devops_agent import __version__
 from devops_agent.core.config import DEFAULT_CONFIG_TOML, load_config
-from devops_agent.core.contracts import Severity
+from devops_agent.core.contracts import Severity, StackProfile
 from devops_agent.core.paths import Paths, resolve_root
 from devops_agent.core.reporter import Reporter
 from devops_agent.core.state import State, StateStore
@@ -23,6 +23,8 @@ from devops_agent.discovery import Discovery
 from devops_agent.discovery.models import DiscoveryResult
 from devops_agent.redaction import RedactionResult, Redactor
 from devops_agent.validation import AuditResult, audit as run_audit
+from devops_agent.generation.scaffold import scaffold_docker
+from devops_agent.generation.skeletons import deterministic_spec, render_dockerfile
 
 app = typer.Typer(
     name="devops-agent",
@@ -115,10 +117,8 @@ def _render_masks(result: RedactionResult) -> None:
     console.print(table)
 
 
-def _render_audit(result: AuditResult, root: Path) -> None:
+def _render_audit(result: AuditResult) -> None:
     """Rich-вывод результата аудита для команды `audit`."""
-    console.print(f"[dim]Корень: {root}[/dim]")
-
     if not result.artifacts:
         console.print("[yellow]Инфраструктурных артефактов не найдено — нечего аудировать.[/yellow]")
         return
@@ -214,7 +214,7 @@ def report(root: Path = _root_option()) -> None:
         console.print("[yellow]Прогонов пока нет.[/]")
         return
     _, report_obj = latest
-    console.print(reporter.render_markdown(report_obj), markup=False)
+    print(reporter.render_markdown(report_obj))
 
 
 @app.command()
@@ -245,7 +245,7 @@ def redact(
     else:
         result = redactor.redact(target)
 
-    console.print(result.masked_text, markup=False)
+    print(result.masked_text)
     if report:
         _render_masks(result)
 
@@ -256,12 +256,16 @@ def audit(
     no_build: bool = typer.Option(
         False, "--no-build", help="Только статическая валидация (без сборки и запуска)."
     ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Показывать живой вывод docker build."
+    ),
 ) -> None:
     """Проверить существующие артефакты и вернуть findings без изменений."""
     paths = Paths(resolve_root(root))
     config = load_config(paths.config_file)
-    result = run_audit(paths.root, config, skip_build=no_build)
-    _render_audit(result, paths.root)
+    console.print(f"[dim]Корень: {paths.root}[/dim]")
+    result = run_audit(paths.root, config, skip_build=no_build, verbose=verbose)
+    _render_audit(result)
     if any(f.severity == Severity.ERROR for f in result.findings):
         raise typer.Exit(code=1)
 
@@ -285,6 +289,20 @@ def explain(
     _not_implemented("explain", 5)
 
 
+def _render_dry_run(profile: StackProfile, spec) -> None:
+    """Вывод плана для `scaffold docker --dry-run` (без вызова модели)."""
+    console.print("[bold]Профиль:[/bold]")
+    console.print(
+        f"  Python {profile.python_version or '?'}, "
+        f"{profile.package_manager or '?'}, {profile.framework or '?'}, "
+        f"entrypoint={profile.entry_point or '?'}, port={profile.port or '?'}"
+    )
+    console.print("[bold]Детерминированная спецификация (без LLM):[/bold]")
+    print(spec.model_dump_json(indent=2))
+    console.print("[bold]Dockerfile из скелета:[/bold]")
+    print(render_dockerfile(spec))
+
+
 scaffold_app = typer.Typer(
     help="Сгенерировать инфраструктурные артефакты.", no_args_is_help=False
 )
@@ -297,9 +315,43 @@ def _scaffold(ctx: typer.Context, root: Path = _root_option()) -> None:
 
 
 @scaffold_app.command("docker")
-def _scaffold_docker(root: Path = _root_option()) -> None:
-    """Сгенерировать Dockerfile и .dockerignore."""
-    _not_implemented("scaffold docker", 4)
+def _scaffold_docker(
+    root: Path = _root_option(),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Показать профиль и заготовку без вызова модели."
+    ),
+    diff_only: bool = typer.Option(
+        False, "--diff-only", help="Не писать файл, только показать результат."
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Живой вывод docker build."
+    ),
+) -> None:
+    """Сгенерировать Dockerfile."""
+    paths = Paths(resolve_root(root))
+    config = load_config(paths.config_file)
+    profile = Discovery(paths.root, config).run().profile
+
+    if dry_run:
+        console.print(f"[dim]Корень: {paths.root}[/dim]")
+        _render_dry_run(profile, deterministic_spec(profile))
+        return
+
+    result = scaffold_docker(paths.root, config, profile, verbose=verbose)
+    if not result.accepted:
+        console.print(f"[red]Отклонён:[/red] {result.reason}")
+        raise typer.Exit(code=1)
+
+    target = paths.root / config.artifacts.dockerfile_path
+    if diff_only or target.exists():
+        console.print(f"[dim]Предлагаемый {config.artifacts.dockerfile_path} (не записан):[/dim]")
+        print(result.content)
+        if target.exists():
+            console.print(f"[yellow]Файл {target} уже существует — не перезаписан.[/yellow]")
+    else:
+        target.write_text(result.content, encoding="utf-8")
+        console.print(f"[green]Записан:[/green] {target}")
+    console.print(f"[dim]Итераций: {result.iterations}[/dim]")
 
 
 @scaffold_app.command("ci")

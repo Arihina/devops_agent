@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from devops_agent.core.contracts import StackProfile
 from devops_agent.llm import LLMGateway
 
 _SYSTEM = """\
 Ты — DevOps-инженер. Исправь Dockerfile по ошибке сборки.
 Верни ТОЛЬКО исправленный Dockerfile целиком, без markdown-разметки и пояснений.
 Сохрани структуру (многостадийность, non-root, порядок слоёв) — меняй только то,
-что нужно для устранения ошибки.
+что нужно для устранения ошибки. Версии и имена бери строго из профиля проекта,
+не выдумывай свои.
 """
 
 
@@ -18,8 +20,20 @@ class RepairSynthesizer:
     def __init__(self, gateway: LLMGateway) -> None:
         self.gateway = gateway
 
-    def repair_dockerfile(self, dockerfile: str, error_log: str) -> str:
+    def repair_dockerfile(
+        self, dockerfile: str, error_log: str, profile: StackProfile
+    ) -> str:
+        profile_block = (
+            "Профиль проекта (используй эти факты):\n"
+            f"- Python: {profile.python_version or '?'}\n"
+            f"- Пакетный менеджер: {profile.package_manager or '?'}\n"
+            f"- Фреймворк: {profile.framework or '?'}\n"
+            f"- Точка входа: {profile.entry_point or '?'}\n"
+            f"- Порт: {profile.port or '?'}\n"
+            f"- Системные зависимости: {', '.join(profile.system_dependencies) or 'нет'}\n"
+        )
         user = (
+            f"{profile_block}\n"
             "Текущий Dockerfile:\n"
             f"{dockerfile}\n\n"
             "Ошибка сборки:\n"

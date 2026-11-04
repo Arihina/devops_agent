@@ -92,7 +92,7 @@ def scaffold_docker(
         else:
             error_log = build_result.reason
 
-        content = repair.repair_dockerfile(content, error_log)
+        content = repair.repair_dockerfile(content, error_log, profile)
 
     return ScaffoldResult(
         accepted=False,

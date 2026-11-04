@@ -113,3 +113,131 @@ def render_dockerfile(spec: DockerfileSpec) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+# Compose и CI (детерминированные шаблоны, без LLM)
+
+# Внешний сервис → спецификация для docker-compose.
+SERVICE_SPECS: dict[str, dict] = {
+    "postgres": {
+        "name": "db",
+        "image": "postgres:16-alpine",
+        "port": 5432,
+        "env": {"POSTGRES_DB": "app", "POSTGRES_USER": "postgres", "POSTGRES_PASSWORD": "postgres"},
+        "app_env": {"DATABASE_URL": "postgresql://postgres:postgres@db:5432/app"},
+    },
+    "redis": {
+        "name": "cache",
+        "image": "redis:7-alpine",
+        "port": 6379,
+        "env": {},
+        "app_env": {"REDIS_URL": "redis://cache:6379/0"},
+    },
+    "mysql": {
+        "name": "db",
+        "image": "mysql:8.4",
+        "port": 3306,
+        "env": {"MYSQL_DATABASE": "app", "MYSQL_USER": "app", "MYSQL_PASSWORD": "app", "MYSQL_ROOT_PASSWORD": "root"},
+        "app_env": {"DATABASE_URL": "mysql://app:app@db:3306/app"},
+    },
+    "mongodb": {
+        "name": "db",
+        "image": "mongo:7",
+        "port": 27017,
+        "env": {},
+        "app_env": {"MONGODB_URL": "mongodb://db:27017/app"},
+    },
+    "rabbitmq": {
+        "name": "broker",
+        "image": "rabbitmq:3-management",
+        "port": 5672,
+        "env": {},
+        "app_env": {"RABBITMQ_URL": "amqp://broker:5672/"},
+    },
+    "memcached": {
+        "name": "cache",
+        "image": "memcached:1-alpine",
+        "port": 11211,
+        "env": {},
+        "app_env": {"MEMCACHED_URL": "memcached://cache:11211/"},
+    },
+    "elasticsearch": {
+        "name": "search",
+        "image": "elasticsearch:8.13.0",
+        "port": 9200,
+        "env": {"discovery.type": "single-node"},
+        "app_env": {"ELASTICSEARCH_URL": "http://search:9200"},
+    },
+    "kafka": {
+        "name": "broker",
+        "image": "bitnami/kafka:3.7",
+        "port": 9092,
+        "env": {},
+        "app_env": {"KAFKA_BOOTSTRAP_SERVERS": "broker:9092"},
+    },
+}
+
+
+def render_compose(profile: StackProfile) -> str:
+    """Собрать docker-compose для локальной разработки (детерминированно)."""
+    services = [s for s in profile.external_services if s in SERVICE_SPECS]
+    port = profile.port or 8000
+
+    app_env: dict[str, str] = {"PORT": str(port)}
+    for service in services:
+        app_env.update(SERVICE_SPECS[service]["app_env"])
+
+    lines = ["services:", "", "  app:", "    build: .", "    ports:"]
+    lines.append(f'      - "{port}:{port}"')
+    lines.append("    environment:")
+    for key, value in app_env.items():
+        lines.append(f'      {key}: "{value}"')
+    if services:
+        lines.append("    depends_on:")
+        for service in services:
+            lines.append(f"      - {SERVICE_SPECS[service]['name']}")
+    lines.append("")
+
+    for service in services:
+        spec = SERVICE_SPECS[service]
+        lines.append(f"  {spec['name']}:")
+        lines.append(f"    image: {spec['image']}")
+        if spec.get("env"):
+            lines.append("    environment:")
+            for key, value in spec["env"].items():
+                lines.append(f'      {key}: "{value}"')
+        lines.append("    ports:")
+        lines.append(f'      - "{spec["port"]}:{spec["port"]}"')
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_ci(profile: StackProfile) -> str:
+    """Собрать CI-workflow (GitHub Actions, детерминированно)."""
+    python_version = profile.python_version or "3.12"
+    install = install_command_for(profile.package_manager)
+    lines = [
+        "name: CI",
+        "",
+        "on:",
+        "  push:",
+        "    branches: [main, master]",
+        "  pull_request:",
+        "",
+        "jobs:",
+        "  test:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - uses: actions/checkout@v4",
+        "      - uses: actions/setup-python@v5",
+        "        with:",
+        f"          python-version: '{python_version}'",
+        "      - name: Install dependencies",
+        f"        run: {install}",
+        "      - name: Run tests",
+        "        run: pytest",
+        "      - name: Build image",
+        "        run: docker build -t app .",
+        "",
+    ]
+    return "\n".join(lines)

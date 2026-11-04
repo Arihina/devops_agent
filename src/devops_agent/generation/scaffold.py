@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from devops_agent.core.config import Config
 from devops_agent.core.contracts import StackProfile, Verdict
 from devops_agent.generation.repair import RepairSynthesizer
+from devops_agent.generation.skeletons import render_compose, render_ci
 from devops_agent.generation.synthesizer import ArtifactSynthesizer
 from devops_agent.llm import LLMGateway
 from devops_agent.validation.docker import DockerExecution
@@ -30,11 +31,16 @@ class ScaffoldResult(BaseModel):
     reason: str = ""
 
 
-def _write_draft(content: str) -> Path:
-    fd, name = tempfile.mkstemp(prefix="devopsagent-draft-", suffix=".Dockerfile")
+def _write_draft(content: str, suffix: str = ".Dockerfile") -> Path:
+    fd, name = tempfile.mkstemp(prefix="devopsagent-draft-", suffix=suffix)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(content)
     return Path(name)
+
+
+def _tail(text: str, n: int = 20) -> str:
+    lines = [line for line in text.splitlines() if line.strip()]
+    return "\n".join(lines[-n:]) if lines else ""
 
 
 def scaffold_docker(
@@ -94,3 +100,43 @@ def scaffold_docker(
         iterations=config.generation.max_iterations,
         reason="лимит итераций починки исчерпан",
     )
+
+
+def _lint_result(validator: Validator, content: str, suffix: str, lint) -> ScaffoldResult:
+    """Прогнать lint-гейт по черновику и вернуть ScaffoldResult."""
+    draft = _write_draft(content, suffix=suffix)
+    try:
+        gate = lint(draft)
+    finally:
+        draft.unlink(missing_ok=True)
+    if gate.verdict == Verdict.FAIL:
+        return ScaffoldResult(
+            accepted=False, content=content, reason=f"Lint Gate: {gate.reason}"
+        )
+    return ScaffoldResult(accepted=True, content=content, iterations=1, reason=gate.reason)
+
+
+def scaffold_compose(
+    root: Path,
+    config: Config,
+    profile: StackProfile,
+    verbose: bool = False,
+) -> ScaffoldResult:
+    """Сгенерировать docker-compose и проверить `docker compose config`."""
+    validator = Validator(
+        root, config, DockerExecution(config.execution.container_runtime), verbose=verbose
+    )
+    return _lint_result(validator, render_compose(profile), ".yml", validator.lint_compose)
+
+
+def scaffold_ci(
+    root: Path,
+    config: Config,
+    profile: StackProfile,
+    verbose: bool = False,
+) -> ScaffoldResult:
+    """Сгенерировать CI-workflow (без запуска на живом GitHub)."""
+    validator = Validator(
+        root, config, DockerExecution(config.execution.container_runtime), verbose=verbose
+    )
+    return _lint_result(validator, render_ci(profile), ".yml", validator.lint_ci)

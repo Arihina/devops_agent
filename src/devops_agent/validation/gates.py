@@ -128,7 +128,7 @@ class Validator:
         findings = [Finding(
             rule="lint:compose-config",
             severity=Severity.ERROR,
-            location=compose_path.relative_to(self.root).as_posix(),
+            location=self._rel(compose_path),
             suggestion=_tail(result.stderr),
         )]
         return GateResult(
@@ -137,7 +137,7 @@ class Validator:
         )
 
     def lint_ci(self, ci_path: Path) -> GateResult:
-        rel = ci_path.relative_to(self.root).as_posix()
+        rel = self._rel(ci_path)
         actionlint = shutil.which("actionlint")
         if actionlint:
             proc = subprocess.run(
@@ -269,7 +269,7 @@ class Validator:
                 findings.append(Finding(
                     rule="repro:pinned-image",
                     severity=Severity.WARNING,
-                    location=compose_path.relative_to(self.root).as_posix(),
+                    location=self._rel(compose_path),
                     suggestion=f"Зафиксируйте тег образа: {image}",
                 ))
         return GateResult(

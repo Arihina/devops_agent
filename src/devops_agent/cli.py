@@ -23,7 +23,12 @@ from devops_agent.discovery import Discovery
 from devops_agent.discovery.models import DiscoveryResult
 from devops_agent.redaction import RedactionResult, Redactor
 from devops_agent.validation import AuditResult, audit as run_audit
-from devops_agent.generation.scaffold import scaffold_docker
+from devops_agent.generation.scaffold import (
+    ScaffoldResult,
+    scaffold_ci,
+    scaffold_compose,
+    scaffold_docker,
+)
 from devops_agent.generation.skeletons import deterministic_spec, render_dockerfile
 
 app = typer.Typer(
@@ -303,6 +308,23 @@ def _render_dry_run(profile: StackProfile, spec) -> None:
     print(render_dockerfile(spec))
 
 
+def _emit_scaffold(result: ScaffoldResult, target: Path, diff_only: bool, label: str) -> None:
+    """Принять → записать/показать; отклонить → exit 1."""
+    if not result.accepted:
+        console.print(f"[red]Отклонён:[/red] {result.reason}")
+        raise typer.Exit(code=1)
+    if diff_only or target.exists():
+        console.print(f"[dim]Предлагаемый {label} (не записан):[/dim]")
+        print(result.content)
+        if target.exists():
+            console.print(f"[yellow]Файл {target} уже существует — не перезаписан.[/yellow]")
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(result.content, encoding="utf-8")
+        console.print(f"[green]Записан:[/green] {target}")
+    console.print(f"[dim]Итераций: {result.iterations}[/dim]")
+
+
 scaffold_app = typer.Typer(
     help="Сгенерировать инфраструктурные артефакты.", no_args_is_help=False
 )
@@ -338,32 +360,58 @@ def _scaffold_docker(
         return
 
     result = scaffold_docker(paths.root, config, profile, verbose=verbose)
-    if not result.accepted:
-        console.print(f"[red]Отклонён:[/red] {result.reason}")
-        raise typer.Exit(code=1)
-
-    target = paths.root / config.artifacts.dockerfile_path
-    if diff_only or target.exists():
-        console.print(f"[dim]Предлагаемый {config.artifacts.dockerfile_path} (не записан):[/dim]")
-        print(result.content)
-        if target.exists():
-            console.print(f"[yellow]Файл {target} уже существует — не перезаписан.[/yellow]")
-    else:
-        target.write_text(result.content, encoding="utf-8")
-        console.print(f"[green]Записан:[/green] {target}")
-    console.print(f"[dim]Итераций: {result.iterations}[/dim]")
+    _emit_scaffold(
+        result,
+        paths.root / config.artifacts.dockerfile_path,
+        diff_only,
+        config.artifacts.dockerfile_path,
+    )
 
 
 @scaffold_app.command("ci")
-def _scaffold_ci(root: Path = _root_option()) -> None:
-    """Сгенерировать CI-workflow."""
-    _not_implemented("scaffold ci", 4)
+def _scaffold_ci(
+    root: Path = _root_option(),
+    diff_only: bool = typer.Option(
+        False, "--diff-only", help="Не писать файл, только показать результат."
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Живой вывод внешних проверок."
+    ),
+) -> None:
+    """Сгенерировать CI-workflow (без запуска на живом GitHub)."""
+    paths = Paths(resolve_root(root))
+    config = load_config(paths.config_file)
+    profile = Discovery(paths.root, config).run().profile
+    result = scaffold_ci(paths.root, config, profile, verbose=verbose)
+    _emit_scaffold(
+        result,
+        paths.root / config.artifacts.ci_path,
+        diff_only,
+        config.artifacts.ci_path,
+    )
 
 
 @scaffold_app.command("compose")
-def _scaffold_compose(root: Path = _root_option()) -> None:
+def _scaffold_compose(
+    root: Path = _root_option(),
+    diff_only: bool = typer.Option(
+        False, "--diff-only", help="Не писать файл, только показать результат."
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Живой вывод внешних проверок."
+    ),
+) -> None:
     """Сгенерировать docker-compose."""
-    _not_implemented("scaffold compose", 4)
+    paths = Paths(resolve_root(root))
+    config = load_config(paths.config_file)
+    profile = Discovery(paths.root, config).run().profile
+    result = scaffold_compose(paths.root, config, profile, verbose=verbose)
+    _emit_scaffold(
+        result,
+        paths.root / config.artifacts.compose_path,
+        diff_only,
+        config.artifacts.compose_path,
+    )
 
 
 app.add_typer(scaffold_app, name="scaffold")

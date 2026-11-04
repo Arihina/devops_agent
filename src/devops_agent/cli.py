@@ -22,6 +22,9 @@ from devops_agent.core.state import State, StateStore
 from devops_agent.discovery import Discovery
 from devops_agent.discovery.models import DiscoveryResult
 from devops_agent.redaction import RedactionResult, Redactor
+from devops_agent.diagnosis import DiagnoseResult, diagnose as run_diagnose
+from devops_agent.diagnosis.explain import explain_artifact
+from devops_agent.llm import LLMGateway
 from devops_agent.validation import AuditResult, audit as run_audit
 from devops_agent.generation.scaffold import (
     ScaffoldResult,
@@ -281,7 +284,15 @@ def diagnose(
     root: Path = _root_option(),
 ) -> None:
     """Разобрать сбой: лог → корневая причина → предложенный патч."""
-    _not_implemented("diagnose", 5)
+    paths = Paths(resolve_root(root))
+    config = load_config(paths.config_file)
+    log_path = Path(log)
+    if log_path.is_file():
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    else:
+        text = log
+    result = run_diagnose(text, paths.root, config)
+    _render_diagnosis(result)
 
 
 @app.command()
@@ -291,7 +302,47 @@ def explain(
     root: Path = _root_option(),
 ) -> None:
     """Объяснить, что делает существующий файл и почему."""
-    _not_implemented("explain", 5)
+    paths = Paths(resolve_root(root))
+    config = load_config(paths.config_file)
+    artifact_path = paths.root / artifact
+    if not artifact_path.is_file():
+        console.print(f"[red]Файл не найден:[/red] {artifact_path}")
+        raise typer.Exit(code=2)
+    content = artifact_path.read_text(encoding="utf-8", errors="replace")
+    gateway = LLMGateway(model=config.generation.model)
+    print(explain_artifact(content, artifact, gateway))
+
+
+def _render_diagnosis(result: DiagnoseResult) -> None:
+    """Rich-вывод результата разбора сбоя (с честным разделением источника)."""
+    d = result.diagnosis
+    if d.source.value == "signature":
+        source_label, style = "сигнатура", "green"
+    else:
+        source_label, style = "модель", "yellow"
+
+    console.print(
+        f"[bold]Диагноз[/bold] — источник: [{style}]{source_label}[/{style}], "
+        f"уверенность {d.confidence:.0%}"
+    )
+    console.print(f"[bold]Гипотеза:[/bold] {d.hypothesis}")
+    if d.proposed_diff:
+        console.print("[bold]Исправление:[/bold]")
+        print(d.proposed_diff)
+
+    meta = []
+    if d.source.value == "signature" and result.signature_id:
+        meta.append(f"сигнатура: {result.signature_id}")
+    if result.normalized.exit_code is not None:
+        meta.append(f"exit code {result.normalized.exit_code}")
+    if result.normalized.ansi_removed:
+        meta.append(f"ANSI удалено: {result.normalized.ansi_removed}")
+    if meta:
+        console.print("[dim]" + "; ".join(meta) + "[/dim]")
+
+    if d.source.value == "model" and result.redacted_text:
+        console.print("[bold]Текст, ушедший в модель (после редкации):[/bold]")
+        print(result.redacted_text)
 
 
 def _render_dry_run(profile: StackProfile, spec) -> None:

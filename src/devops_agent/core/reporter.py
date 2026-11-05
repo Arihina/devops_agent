@@ -11,6 +11,14 @@ from pydantic import BaseModel, Field
 from devops_agent.core.contracts import Artifact, Diagnosis, Finding
 from devops_agent.core.paths import Paths
 
+COVERAGE_BOUNDARIES = """\
+Покрыто: Dockerfile/.dockerignore, docker-compose, CI-workflow; сборка, запуск
+и проверка порта; диагностика сбоев сборки.
+НЕ покрыто: Kubernetes/Helm, Terraform/IaC, применение к живой системе,
+мониторинг и алерты, управление секретами, multi-repo, языки кроме Python.
+Отчёт описывает только файлы в репозитории и не означает готовность к production.
+"""
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -25,6 +33,7 @@ class Report(BaseModel):
     findings: list[Finding] = Field(default_factory=list)
     artifacts: list[Artifact] = Field(default_factory=list)
     diagnoses: list[Diagnosis] = Field(default_factory=list)
+    coverage: str = ""
     created_at: str = Field(default_factory=lambda: _utcnow().isoformat())
 
 
@@ -60,7 +69,8 @@ class Reporter:
         if not reports:
             return None
         latest_path = reports[-1]
-        report = Report.model_validate_json(latest_path.read_text(encoding="utf-8"))
+        report = Report.model_validate_json(
+            latest_path.read_text(encoding="utf-8"))
         return latest_path.parent.name, report
 
     def render_markdown(self, report: Report) -> str:
@@ -83,7 +93,7 @@ class Reporter:
             ])
             for finding in report.findings:
                 lines.append(
-                    f"| {finding.rule} | {finding.severity} | {finding.location} | "
+                    f"| {finding.rule} | {finding.severity.value} | {finding.location} | "
                     f"{finding.suggestion or '—'} |"
                 )
         else:
@@ -95,7 +105,7 @@ class Reporter:
             lines.append("")
             for artifact in report.artifacts:
                 lines.append(
-                    f"- **{artifact.type}** → `{artifact.target_path}` "
+                    f"- **{artifact.type.value}** → `{artifact.target_path}` "
                     f"(итерация {artifact.iteration})"
                 )
         else:
@@ -107,10 +117,17 @@ class Reporter:
             lines.append("")
             for diagnosis in report.diagnoses:
                 lines.append(
-                    f"- **{diagnosis.source}** ({diagnosis.confidence:.0%}): "
+                    f"- **{diagnosis.source.value}** ({diagnosis.confidence:.0%}): "
                     f"{diagnosis.hypothesis}"
                 )
         else:
             lines.extend(["", "_Нет._"])
+        lines.append("")
+
+        if report.coverage:
+            lines.append("## Границы покрытия")
+            lines.append("")
+            lines.append(report.coverage)
+            lines.append("")
 
         return "\n".join(lines) + "\n"

@@ -22,12 +22,33 @@ class ArtifactStatus(BaseModel):
     updated_at: str = ""
 
 
+class Metrics(BaseModel):
+    """Накопительные метрики (раздел 10)."""
+
+    diagnoses_total: int = 0
+    diagnoses_signature: int = 0
+    diagnoses_model: int = 0
+    scaffold_runs: int = 0
+    scaffold_accepted: int = 0
+    scaffold_iterations: int = 0
+    scaffold_seconds: float = 0.0
+    audit_runs: int = 0
+
+    @property
+    def signature_coverage(self) -> float | None:
+        """Доля сбоев, покрытых сигнатурами (без обращения к модели)."""
+        if self.diagnoses_total == 0:
+            return None
+        return self.diagnoses_signature / self.diagnoses_total
+
+
 class State(BaseModel):
     """Машинночитаемое состояние агента (state.json)."""
 
     schema_version: int = SCHEMA_VERSION
     stack_profile_hash: str = ""
     artifacts: dict[str, ArtifactStatus] = Field(default_factory=dict)
+    metrics: Metrics = Field(default_factory=Metrics)
     last_run: str = ""
 
 
@@ -44,4 +65,5 @@ class StateStore:
 
     def save(self, state: State) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(state.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        self.path.write_text(state.model_dump_json(
+            indent=2) + "\n", encoding="utf-8")

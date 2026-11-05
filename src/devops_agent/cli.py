@@ -7,6 +7,7 @@ explain, report.
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import typer
 from rich.console import Console
@@ -17,7 +18,7 @@ from devops_agent import __version__
 from devops_agent.core.config import DEFAULT_CONFIG_TOML, load_config
 from devops_agent.core.contracts import Severity, StackProfile
 from devops_agent.core.paths import Paths, resolve_root
-from devops_agent.core.reporter import Reporter
+from devops_agent.core.reporter import COVERAGE_BOUNDARIES, Report, Reporter
 from devops_agent.core.state import State, StateStore
 from devops_agent.discovery import Discovery
 from devops_agent.discovery.models import DiscoveryResult
@@ -26,6 +27,7 @@ from devops_agent.diagnosis import DiagnoseResult, diagnose as run_diagnose
 from devops_agent.diagnosis.explain import explain_artifact
 from devops_agent.llm import LLMGateway
 from devops_agent.validation import AuditResult, audit as run_audit
+from devops_agent.validation.docker import DockerExecution
 from devops_agent.generation.scaffold import (
     ScaffoldResult,
     scaffold_ci,
@@ -57,6 +59,59 @@ def _root_option():
 def _not_implemented(name: str, stage: int) -> None:
     console.print(f"[yellow]{name}[/] — будет реализовано на этапе {stage}.")
     raise typer.Exit(code=2)
+
+
+def _write_report(
+    paths: Paths,
+    command: str,
+    status: str,
+    summary: str,
+    findings=None,
+    artifacts=None,
+    diagnoses=None,
+) -> None:
+    """Записать отчёт прогона с границами покрытия (§7, §11)."""
+    report = Report(
+        command=command,
+        status=status,
+        summary=summary,
+        findings=findings or [],
+        artifacts=artifacts or [],
+        diagnoses=diagnoses or [],
+        coverage=COVERAGE_BOUNDARIES,
+    )
+    run_dir = Reporter(paths).write(report)
+    console.print(f"[dim]Отчёт: {run_dir}/report.md[/dim]")
+
+
+def _update_metrics(paths: Paths, update) -> None:
+    """Применить изменение к метрикам и сохранить state.json."""
+    store = StateStore(paths.state_file)
+    state = store.load()
+    update(state.metrics)
+    store.save(state)
+
+
+def _render_metrics(paths: Paths) -> None:
+    """Вывести накопленные метрики (раздел 10)."""
+    metrics = StateStore(paths.state_file).load().metrics
+    coverage = metrics.signature_coverage
+    table = Table(title="Метрики")
+    table.add_column("Показатель", style="bold")
+    table.add_column("Значение")
+    table.add_row("Диагнозов всего", str(metrics.diagnoses_total))
+    table.add_row(
+        "Покрыто сигнатурами",
+        f"{metrics.diagnoses_signature} ({coverage:.0%})" if coverage is not None else "—",
+    )
+    table.add_row("Scaffold принято/всего", f"{metrics.scaffold_accepted}/{metrics.scaffold_runs}")
+    table.add_row(
+        "Scaffold среднее итераций",
+        f"{metrics.scaffold_iterations / metrics.scaffold_runs:.1f}" if metrics.scaffold_runs else "—",
+    )
+    table.add_row("Scaffold суммарное время", f"{metrics.scaffold_seconds:.1f} с")
+    table.add_row("Audit прогонов", str(metrics.audit_runs))
+    console.print(table)
 
 
 def _render_discovery(result: DiscoveryResult, root: Path) -> None:
@@ -215,8 +270,10 @@ def init(
 
 @app.command()
 def report(root: Path = _root_option()) -> None:
-    """Показать сводку последнего прогона."""
-    reporter = Reporter(Paths(resolve_root(root)))
+    """Показать метрики и сводку последнего прогона."""
+    paths = Paths(resolve_root(root))
+    _render_metrics(paths)
+    reporter = Reporter(paths)
     latest = reporter.latest()
     if latest is None:
         console.print("[yellow]Прогонов пока нет.[/]")
@@ -267,14 +324,33 @@ def audit(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Показывать живой вывод docker build."
     ),
+    record: bool = typer.Option(
+        False, "--record", help="Записать отчёт прогона и обновить метрики."
+    ),
 ) -> None:
     """Проверить существующие артефакты и вернуть findings без изменений."""
     paths = Paths(resolve_root(root))
     config = load_config(paths.config_file)
     console.print(f"[dim]Корень: {paths.root}[/dim]")
+
+    if not no_build and not DockerExecution(config.execution.container_runtime).available():
+        console.print("[yellow]Предупреждение: Docker недоступен — сборка/запуск будут пропущены.[/yellow]")
+
     result = run_audit(paths.root, config, skip_build=no_build, verbose=verbose)
     _render_audit(result)
-    if any(f.severity == Severity.ERROR for f in result.findings):
+
+    has_errors = any(f.severity == Severity.ERROR for f in result.findings)
+    if record:
+        _update_metrics(paths, lambda m: setattr(m, "audit_runs", m.audit_runs + 1))
+        _write_report(
+            paths,
+            "audit",
+            "failed" if has_errors else "success",
+            f"Проверено артефактов: {len(result.artifacts)}, findings: {len(result.findings)}.",
+            findings=result.findings,
+        )
+
+    if has_errors:
         raise typer.Exit(code=1)
 
 
@@ -282,6 +358,9 @@ def audit(
 def diagnose(
     log: str = typer.Argument(..., help="Путь к файлу лога или сам лог сбоя."),
     root: Path = _root_option(),
+    record: bool = typer.Option(
+        False, "--record", help="Записать отчёт прогона и обновить метрики."
+    ),
 ) -> None:
     """Разобрать сбой: лог → корневая причина → предложенный патч."""
     paths = Paths(resolve_root(root))
@@ -293,6 +372,25 @@ def diagnose(
         text = log
     result = run_diagnose(text, paths.root, config)
     _render_diagnosis(result)
+
+    if record:
+        is_signature = result.diagnosis.source.value == "signature"
+
+        def update(metrics):
+            metrics.diagnoses_total += 1
+            if is_signature:
+                metrics.diagnoses_signature += 1
+            else:
+                metrics.diagnoses_model += 1
+
+        _update_metrics(paths, update)
+        _write_report(
+            paths,
+            "diagnose",
+            "success",
+            f"Источник: {result.diagnosis.source.value}, уверенность {result.diagnosis.confidence:.0%}.",
+            diagnoses=[result.diagnosis],
+        )
 
 
 @app.command()
@@ -399,6 +497,9 @@ def _scaffold_docker(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Живой вывод docker build."
     ),
+    record: bool = typer.Option(
+        False, "--record", help="Записать отчёт прогона и обновить метрики."
+    ),
 ) -> None:
     """Сгенерировать Dockerfile."""
     paths = Paths(resolve_root(root))
@@ -410,13 +511,31 @@ def _scaffold_docker(
         _render_dry_run(profile, deterministic_spec(profile))
         return
 
+    start = time.monotonic()
     result = scaffold_docker(paths.root, config, profile, verbose=verbose)
+    elapsed = time.monotonic() - start
     _emit_scaffold(
         result,
         paths.root / config.artifacts.dockerfile_path,
         diff_only,
         config.artifacts.dockerfile_path,
     )
+
+    if record:
+        def update(metrics):
+            metrics.scaffold_runs += 1
+            if result.accepted:
+                metrics.scaffold_accepted += 1
+            metrics.scaffold_iterations += result.iterations
+            metrics.scaffold_seconds += elapsed
+
+        _update_metrics(paths, update)
+        _write_report(
+            paths,
+            "scaffold docker",
+            "success" if result.accepted else "failed",
+            f"Принят: {result.accepted}, итераций: {result.iterations}, время: {elapsed:.1f} с.",
+        )
 
 
 @scaffold_app.command("ci")
@@ -427,6 +546,9 @@ def _scaffold_ci(
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Живой вывод внешних проверок."
+    ),
+    record: bool = typer.Option(
+        False, "--record", help="Записать отчёт прогона."
     ),
 ) -> None:
     """Сгенерировать CI-workflow (без запуска на живом GitHub)."""
@@ -440,6 +562,8 @@ def _scaffold_ci(
         diff_only,
         config.artifacts.ci_path,
     )
+    if record:
+        _write_report(paths, "scaffold ci", "success" if result.accepted else "failed", f"Принят: {result.accepted}.")
 
 
 @scaffold_app.command("compose")
@@ -450,6 +574,9 @@ def _scaffold_compose(
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Живой вывод внешних проверок."
+    ),
+    record: bool = typer.Option(
+        False, "--record", help="Записать отчёт прогона."
     ),
 ) -> None:
     """Сгенерировать docker-compose."""
@@ -463,6 +590,8 @@ def _scaffold_compose(
         diff_only,
         config.artifacts.compose_path,
     )
+    if record:
+        _write_report(paths, "scaffold compose", "success" if result.accepted else "failed", f"Принят: {result.accepted}.")
 
 
 app.add_typer(scaffold_app, name="scaffold")

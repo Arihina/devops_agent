@@ -6,6 +6,8 @@ explain, report.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 import time
 
@@ -16,6 +18,13 @@ from rich.tree import Tree
 
 from devops_agent import __version__
 from devops_agent.core.config import DEFAULT_CONFIG_TOML, load_config
+from devops_agent.core.mappings import (
+    BUILTIN_MAPPINGS,
+    load_mappings,
+    load_user_mappings,
+    mappings_path,
+    save_mappings,
+)
 from devops_agent.core.contracts import Severity, StackProfile
 from devops_agent.core.paths import Paths, resolve_root
 from devops_agent.core.reporter import COVERAGE_BOUNDARIES, Report, Reporter
@@ -594,4 +603,62 @@ def _scaffold_compose(
         _write_report(paths, "scaffold compose", "success" if result.accepted else "failed", f"Принят: {result.accepted}.")
 
 
+mappings_app = typer.Typer(
+    help="Справочные таблицы агента (пакет→apt, сервис→образ, фреймворк→порт).",
+    no_args_is_help=True,
+)
+
+
+@mappings_app.command("init")
+def _mappings_init(
+    root: Path = _root_option(),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Перезаписать существующий mappings.json."
+    ),
+) -> None:
+    """Создать .devopsagent/mappings.json с встроенными значениями (шаблон для правки)."""
+    paths = Paths(resolve_root(root))
+    path = mappings_path(paths.root)
+    if path.is_file() and not force:
+        console.print(f"[yellow]Уже существует:[/yellow] {path}")
+        console.print("Используйте --force для перезаписи.")
+        raise typer.Exit(code=2)
+    save_mappings(paths.root, BUILTIN_MAPPINGS)
+    console.print(f"[green]Создан шаблон:[/green] {path}")
+
+
+@mappings_app.command("show")
+def _mappings_show(root: Path = _root_option()) -> None:
+    """Показать эффективные справочные таблицы (встроенные + пользовательские)."""
+    paths = Paths(resolve_root(root))
+    print(load_mappings(paths.root).model_dump_json(indent=2))
+
+
+@mappings_app.command("edit")
+def _mappings_edit(root: Path = _root_option()) -> None:
+    """Открыть mappings.json в $EDITOR."""
+    paths = Paths(resolve_root(root))
+    path = mappings_path(paths.root)
+    if not path.is_file():
+        console.print("[yellow]mappings.json не найден — сначала `mappings init`.[/yellow]")
+        raise typer.Exit(code=2)
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+    subprocess.run([editor, str(path)])
+
+
+@mappings_app.command("add-apt")
+def _mappings_add_apt(
+    package: str = typer.Argument(..., help="Python-пакет, например psycopg2."),
+    apt_packages: list[str] = typer.Argument(..., help="apt-пакеты, например libpq-dev."),
+    root: Path = _root_option(),
+) -> None:
+    """Добавить соответствие «Python-пакет → apt-пакеты»."""
+    paths = Paths(resolve_root(root))
+    user = load_user_mappings(paths.root)
+    user.apt_map[package] = list(apt_packages)
+    save_mappings(paths.root, user)
+    console.print(f"[green]Добавлено:[/green] {package} → {', '.join(apt_packages)}")
+
+
 app.add_typer(scaffold_app, name="scaffold")
+app.add_typer(mappings_app, name="mappings")

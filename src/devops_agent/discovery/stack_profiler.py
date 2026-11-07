@@ -7,19 +7,8 @@ import tomllib
 from pathlib import Path
 
 from devops_agent.core.contracts import StackProfile
+from devops_agent.core.mappings import load_mappings
 from devops_agent.discovery.util import extract_version, iter_py_files
-
-# Фреймворк → (пакет-маркер, порт по умолчанию).
-FRAMEWORKS: dict[str, tuple[str, int]] = {
-    "fastapi": ("fastapi", 8000),
-    "django": ("django", 8000),
-    "flask": ("flask", 5000),
-    "starlette": ("starlette", 8000),
-    "aiohttp": ("aiohttp", 8080),
-    "tornado": ("tornado", 8888),
-    "sanic": ("sanic", 8000),
-    "litestar": ("litestar", 8000),
-}
 
 # Имена классов-приложений, присваивание которых считаем точкой входа.
 APP_CLASSES = {"FastAPI", "Flask", "Starlette", "Litestar", "Sanic", "Tornado"}
@@ -32,6 +21,7 @@ class StackProfiler:
     def __init__(self, root: Path, package_names: list[str] | None = None) -> None:
         self.root = root
         self.package_names = {p.lower() for p in (package_names or [])}
+        self.frameworks = load_mappings(root).frameworks
 
     def profile(self) -> StackProfile:
         """Собрать StackProfile.
@@ -100,8 +90,8 @@ class StackProfiler:
         return None
 
     def _detect_framework(self) -> str | None:
-        for framework, (marker, _port) in FRAMEWORKS.items():
-            if marker in self.package_names:
+        for framework, spec in self.frameworks.items():
+            if spec.marker in self.package_names:
                 return framework
         return None
 
@@ -129,7 +119,8 @@ class StackProfiler:
     def _detect_port(self, framework: str | None) -> int | None:
         if framework is None:
             return None
-        return FRAMEWORKS.get(framework, (None, None))[1]
+        spec = self.frameworks.get(framework)
+        return spec.port if spec else None
 
     def _detect_migrations(self) -> list[str]:
         found: list[str] = []

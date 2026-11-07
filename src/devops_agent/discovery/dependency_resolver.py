@@ -6,24 +6,8 @@ import re
 import tomllib
 from pathlib import Path
 
+from devops_agent.core.mappings import load_mappings
 from devops_agent.discovery.models import Package
-
-# Справочник известных соответствий «Python-пакет → apt-пакет».
-APT_MAP: dict[str, list[str]] = {
-    "psycopg2": ["libpq-dev"],
-    "psycopg": ["libpq-dev"],
-    "asyncpg": ["libpq-dev"],
-    "mysqlclient": ["default-libmysqlclient-dev"],
-    "lxml": ["libxml2-dev", "libxslt1-dev"],
-    "pillow": ["libjpeg-dev", "zlib1g-dev", "libpng-dev"],
-    "pycurl": ["libcurl4-openssl-dev"],
-    "cryptography": ["libssl-dev"],
-    "h5py": ["libhdf5-dev"],
-    "weasyprint": ["libpango-1.0-0", "libcairo2"],
-    "pyodbc": ["unixodbc-dev"],
-    "gdal": ["libgdal-dev"],
-    "rasterio": ["libgdal-dev"],
-}
 
 
 def _normalize(name: str) -> str:
@@ -36,6 +20,7 @@ class DependencyResolver:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.apt_map = load_mappings(root).apt_map
 
     def resolve(self) -> list[Package]:
         """Вернуть объединённый список пакетов из всех поддерживаемых манифестов."""
@@ -48,7 +33,7 @@ class DependencyResolver:
         """Вернуть apt-пакеты, требуемые Python-пакетами, по справочнику."""
         apt: list[str] = []
         for pkg in packages:
-            for apt_pkg in APT_MAP.get(_normalize(pkg.name), []):
+            for apt_pkg in self.apt_map.get(_normalize(pkg.name), []):
                 if apt_pkg not in apt:
                     apt.append(apt_pkg)
         return apt

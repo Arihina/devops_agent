@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from devops_agent.core.config import Config
 from devops_agent.core.contracts import StackProfile, Verdict
+from devops_agent.core.mappings import load_mappings
 from devops_agent.generation.repair import RepairSynthesizer
 from devops_agent.generation.skeletons import render_compose, render_ci
 from devops_agent.generation.synthesizer import ArtifactSynthesizer
@@ -126,7 +127,12 @@ def scaffold_compose(
     validator = Validator(
         root, config, DockerExecution(config.execution.container_runtime), verbose=verbose
     )
-    return _lint_result(validator, render_compose(profile), ".yml", validator.lint_compose)
+    return _lint_result(
+        validator,
+        render_compose(profile, load_mappings(root).services),
+        ".yml",
+        validator.lint_compose,
+    )
 
 
 def scaffold_ci(

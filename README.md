@@ -111,6 +111,7 @@ uv run devops-agent explain Dockerfile --root ~/my-backend
 | `diagnose <лог>` | разобрать сбой |
 | `explain <артефакт>` | объяснить файл |
 | `report` | метрики + сводка последнего прогона |
+| `mappings init \| show \| edit \| add-apt` | управлять справочными таблицами |
 
 ### `init`
 
@@ -240,6 +241,43 @@ uv run devops-agent report --root ~/my-backend
 > Простые литеральные фразы (`No space left on device`) экранирования не требуют.
 
 Порядок сопоставления: **встроенные сигнатуры → пользовательские** (по имени файла). Каждый случай, где модель дала верный диагноз, — кандидат на превращение в сигнатуру.
+
+---
+
+## Справочные таблицы (mappings)
+
+Стандартная информация (какой apt-пакет нужен Python-пакету, какой образ у postgres/kafka, какой порт у фреймворка) хранится в справочных таблицах и настраивается через `.devopsagent/mappings.json`.
+
+```bash
+uv run devops-agent mappings init --root ~/my-backend        # создать шаблон
+uv run devops-agent mappings show --root ~/my-backend        # показать эффективные таблицы
+uv run devops-agent mappings edit --root ~/my-backend        # открыть в $EDITOR
+uv run devops-agent mappings add-apt mypackage libcustom-dev --root ~/my-backend
+```
+
+Три таблицы:
+
+| Ключ | Что описывает |
+|---|---|
+| `apt_map` | Python-пакет → apt-пакеты (для сборки) |
+| `services` | внешний сервис → образ, порт, env (для docker-compose) |
+| `frameworks` | фреймворк → пакет-маркер и порт по умолчанию |
+
+Можно указать только то, что меняешь/добавляешь — остальное берётся из встроенных. Пример (поменять образ kafka):
+
+```json
+{
+  "services": {
+    "kafka": {
+      "name": "broker",
+      "image": "registry.local/kafka:3.8",
+      "port": 9092,
+      "env": {},
+      "app_env": {"KAFKA_BOOTSTRAP_SERVERS": "broker:9092"}
+    }
+  }
+}
+```
 
 ---
 
